@@ -35,18 +35,43 @@ jobs:
       run: |
         cd linux-orangepi
         
-        # 查看可用的defconfig
-        echo "=== Available defconfig files ==="
-        ls arch/arm64/configs/ | grep -i sun
+        echo "=== Current directory ==="
+        pwd
+        echo "=== Available defconfig files in arch/arm64/configs/ ==="
+        ls -la arch/arm64/configs/
         
-        # 使用sun50iw9_defconfig（适用于H616/H618）
-        make ARCH=arm64 sun50iw9_defconfig
+        # 使用实际存在的defconfig
+        if [ -f "arch/arm64/configs/linux_sunxi64_defconfig" ]; then
+            echo "Using linux_sunxi64_defconfig"
+            make ARCH=arm64 linux_sunxi64_defconfig
+        elif [ -f "arch/arm64/configs/sunxi_defconfig" ]; then
+            echo "Using sunxi_defconfig"
+            make ARCH=arm64 sunxi_defconfig
+        else
+            echo "No suitable defconfig found, using default"
+            make ARCH=arm64 defconfig
+        fi
         
         # 确保sunxi_geth驱动被启用
         echo "=== Checking SUNXI_GETH config ==="
-        grep CONFIG_SUNXI_GETH .config || echo "CONFIG_SUNXI_GETH=y" >> .config
+        if grep -q "CONFIG_SUNXI_GETH=y" .config; then
+            echo "SUNXI_GETH is already enabled"
+        elif grep -q "CONFIG_SUNXI_GETH=m" .config; then
+            echo "SUNXI_GETH is built as module, changing to built-in"
+            sed -i 's/CONFIG_SUNXI_GETH=m/CONFIG_SUNXI_GETH=y/' .config
+        elif grep -q "# CONFIG_SUNXI_GETH is not set" .config; then
+            echo "SUNXI_GETH is disabled, enabling it"
+            sed -i 's/# CONFIG_SUNXI_GETH is not set/CONFIG_SUNXI_GETH=y/' .config
+        else
+            echo "Adding SUNXI_GETH config"
+            echo "CONFIG_SUNXI_GETH=y" >> .config
+        fi
+        
+        # 保存配置
+        cp .config .config.backup
         
         # 准备模块编译环境
+        make ARCH=arm64 olddefconfig
         make ARCH=arm64 modules_prepare
         
         # 编译sunxi_geth驱动
@@ -61,8 +86,10 @@ jobs:
             modinfo ../output/drivers/sunxi-geth.ko
         else
             echo "❌ Driver compilation failed"
-            # 列出生成的ko文件
+            echo "=== Looking for other network drivers ==="
             find drivers/net/ethernet/allwinner -name "*.ko" 2>/dev/null
+            echo "=== Config check ==="
+            grep SUNXI_GETH .config
             exit 1
         fi
         
