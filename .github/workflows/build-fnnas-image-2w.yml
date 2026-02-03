@@ -1,12 +1,9 @@
-# .github/workflows/build-orangepi-zero2w.yml
 name: Build FnNAS for OrangePi Zero 2W
 
 on:
   workflow_dispatch:
   push:
     branches: [ main ]
-    paths:
-      - 'orangepi-zero2w/**'
 
 jobs:
   build:
@@ -15,32 +12,164 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     
-    - name: Setup OrangePi Zero 2W support
+    - name: Setup OrangePi Zero 2W Support
       run: |
-        # 1. 下载OrangePi内核源码
-        git clone --depth=1 https://github.com/orangepi-xunlong/linux-orangepi -b orange-pi-6.1-sunxi64
+        # 1. 下载OrangePi内核源码（使用正确的分支）
+        echo "Cloning orange-pi-6.1-sun50iw9 branch..."
+        git clone --depth=1 https://github.com/orangepi-xunlong/linux-orangepi -b orange-pi-6.1-sun50iw9
         
-        # 2. 提取sunxi_geth驱动
         cd linux-orangepi
+        
+        # 2. 查看目录结构
+        echo "=== Directory Structure ==="
+        ls -la
+        echo "=== DTS files ==="
+        find arch/arm64/boot/dts/allwinner -name "*h618*" -o -name "*zero2*" 2>/dev/null | head -10
+        
+    - name: Install Build Dependencies
+      run: |
+        sudo apt update
+        sudo apt install -y build-essential bc bison flex libssl-dev libelf-dev device-tree-compiler
+        
+    - name: Configure and Build Driver
+      run: |
+        cd linux-orangepi
+        
+        # 查看可用的defconfig
+        echo "=== Available defconfig files ==="
+        ls arch/arm64/configs/ | grep -i sun
+        
+        # 使用sun50iw9_defconfig（适用于H616/H618）
         make ARCH=arm64 sun50iw9_defconfig
+        
+        # 确保sunxi_geth驱动被启用
+        echo "=== Checking SUNXI_GETH config ==="
+        grep CONFIG_SUNXI_GETH .config || echo "CONFIG_SUNXI_GETH=y" >> .config
+        
+        # 准备模块编译环境
         make ARCH=arm64 modules_prepare
+        
+        # 编译sunxi_geth驱动
+        echo "=== Building sunxi_geth driver ==="
         make ARCH=arm64 M=drivers/net/ethernet/allwinner/
         
-        # 3. 复制驱动
-        mkdir -p ../kernel-modules/
-        cp drivers/net/ethernet/allwinner/sunxi-geth.ko ../kernel-modules/
+        # 检查是否编译成功
+        if [ -f "drivers/net/ethernet/allwinner/sunxi-geth.ko" ]; then
+            echo "✅ Driver compiled successfully"
+            mkdir -p ../output/drivers
+            cp drivers/net/ethernet/allwinner/sunxi-geth.ko ../output/drivers/
+            modinfo ../output/drivers/sunxi-geth.ko
+        else
+            echo "❌ Driver compilation failed"
+            # 列出生成的ko文件
+            find drivers/net/ethernet/allwinner -name "*.ko" 2>/dev/null
+            exit 1
+        fi
         
-        # 4. 复制设备树
-        cp arch/arm64/boot/dts/allwinner/sun50i-h618-orangepi-zero2w.dtb ../device-tree/
+    - name: Prepare Device Tree Files
+      run: |
+        cd linux-orangepi
         
-    - name: Build FnNAS with custom kernel
+        echo "=== Looking for OrangePi Zero 2W DTS/DTB ==="
+        
+        # 查找相关的DTS文件
+        DTS_FILES=$(find arch/arm64/boot/dts/allwinner -name "*h618*" -o -name "*zero2*" 2>/dev/null)
+        echo "Found DTS files:"
+        echo "$DTS_FILES"
+        
+        # 创建输出目录
+        mkdir -p ../output/dtb/allwinner
+        
+        # 尝试编译sun50i-h618-orangepi-zero2w.dts
+        if [ -f "arch/arm64/boot/dts/allwinner/sun50i-h618-orangepi-zero2w.dts" ]; then
+            echo "Compiling DTS to DTB..."
+            dtc -I dts -O dtb -o ../output/dtb/allwinner/sun50i-h618-orangepi-zero2w.dtb \
+                arch/arm64/boot/dts/allwinner/sun50i-h618-orangepi-zero2w.dts
+            echo "✅ DTB compiled: sun50i-h618-orangepi-zero2w.dtb"
+        elif [ -f "arch/arm64/boot/dts/allwinner/sun50i-h616-orangepi-zero2.dts" ]; then
+            # 使用H616的DTS（可能兼容）
+            echo "Using H616 DTS as fallback..."
+            dtc -I dts -O dtb -o ../output/dtb/allwinner/sun50i-h616-orangepi-zero2.dtb \
+                arch/arm64/boot/dts/allwinner/sun50i-h616-orangepi-zero2.dts
+            echo "✅ DTB compiled: sun50i-h616-orangepi-zero2.dtb"
+        else
+            echo "❌ No suitable DTS file found"
+            # 列出所有allwinner DTS文件
+            find arch/arm64/boot/dts/allwinner -name "*.dts" | head -20
+        fi
+        
+    - name: Build FnNAS Image
       uses: ophub/fnnas@main
       with:
-        fnnas_path: ""  # 留空以使用默认基础镜像
-        fnnas_board: "custom"  # 自定义模式
-        fnnas_kernel: "custom"  # 使用自定义内核
+        fnnas_path: ""  # 使用默认基础镜像
+        fnnas_board: "orangepi-zero3"  # 先用zero3的配置，然后我们会替换文件
+        fnnas_kernel: "6.12.y"
         auto_kernel: false
-        custom_kernel_path: "./linux-orangepi"
-        custom_dtbs: "./device-tree/"
-        custom_modules: "./kernel-modules/"
-        builder_name: "orangepi-zero2w"
+        builder_name: "orangepi-zero2w-custom"
+        
+    - name: Modify Image for OrangePi Zero 2W
+      run: |
+        # 找到生成的镜像
+        IMG_FILE=$(find . -name "*.img" -type f | head -1)
+        if [ -z "$IMG_FILE" ]; then
+            echo "❌ No image file found"
+            exit 1
+        fi
+        
+        echo "Found image: $IMG_FILE"
+        
+        # 挂载镜像
+        sudo losetup -fP "$IMG_FILE"
+        LOOP_DEVICE=$(losetup -l | grep "$(realpath $IMG_FILE)" | awk '{print $1}')
+        
+        # 查找分区
+        sudo partprobe "$LOOP_DEVICE"
+        
+        # 挂载boot分区（通常是第一个分区）
+        sudo mkdir -p /mnt/boot /mnt/root
+        sudo mount ${LOOP_DEVICE}p1 /mnt/boot 2>/dev/null || sudo mount ${LOOP_DEVICE}p2 /mnt/boot
+        
+        # 挂载root分区
+        sudo mount ${LOOP_DEVICE}p2 /mnt/root 2>/dev/null || sudo mount ${LOOP_DEVICE}p3 /mnt/root
+        
+        # 1. 替换DTB文件
+        if [ -f "output/dtb/allwinner/sun50i-h618-orangepi-zero2w.dtb" ]; then
+            echo "Replacing DTB file..."
+            sudo cp output/dtb/allwinner/sun50i-h618-orangepi-zero2w.dtb /mnt/boot/dtb/allwinner/
+        elif [ -f "output/dtb/allwinner/sun50i-h616-orangepi-zero2.dtb" ]; then
+            echo "Using H616 DTB file..."
+            sudo cp output/dtb/allwinner/sun50i-h616-orangepi-zero2.dtb /mnt/boot/dtb/allwinner/
+        fi
+        
+        # 2. 添加驱动模块
+        if [ -f "output/drivers/sunxi-geth.ko" ]; then
+            echo "Adding sunxi_geth driver..."
+            sudo mkdir -p /mnt/root/lib/modules/6.12.41-trim/kernel/drivers/net/ethernet/allwinner/
+            sudo cp output/drivers/sunxi-geth.ko /mnt/root/lib/modules/6.12.41-trim/kernel/drivers/net/ethernet/allwinner/
+            
+            # 更新模块依赖
+            sudo chroot /mnt/root depmod -a
+        fi
+        
+        # 3. 添加模块自动加载
+        echo "sunxi_geth" | sudo tee -a /mnt/root/etc/modules-load.d/sunxi.conf
+        
+        # 4. 修改引导配置（如果有extlinux.conf）
+        if [ -f "/mnt/boot/extlinux/extlinux.conf" ]; then
+            echo "Updating extlinux.conf..."
+            sudo sed -i 's/dtb .*/dtb \/dtb\/allwinner\/sun50i-h618-orangepi-zero2w.dtb/' /mnt/boot/extlinux/extlinux.conf
+        fi
+        
+        # 卸载
+        sudo umount /mnt/boot /mnt/root
+        sudo losetup -d "$LOOP_DEVICE"
+        
+        # 重命名镜像
+        mv "$IMG_FILE" "${IMG_FILE%.img}-orangepi-zero2w.img"
+        echo "✅ Modified image saved as: ${IMG_FILE%.img}-orangepi-zero2w.img"
+        
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: fnnas-orangepi-zero2w
+        path: ./*-orangepi-zero2w.img
