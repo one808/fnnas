@@ -1,9 +1,6 @@
-name: Build FnNAS for OrangePi Zero 2W
+name: Build OrangePi Zero 2W Driver
 
-on:
-  workflow_dispatch:
-  push:
-    branches: [ main ]
+on: workflow_dispatch
 
 jobs:
   build:
@@ -12,191 +9,102 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     
-    - name: Setup OrangePi Zero 2W Support
-      run: |
-        # 1. 下载OrangePi内核源码（使用正确的分支）
-        echo "Cloning orange-pi-6.1-sun50iw9 branch..."
-        git clone --depth=1 https://github.com/orangepi-xunlong/linux-orangepi -b orange-pi-6.1-sun50iw9
-        
-        cd linux-orangepi
-        
-        # 2. 查看目录结构
-        echo "=== Directory Structure ==="
-        ls -la
-        echo "=== DTS files ==="
-        find arch/arm64/boot/dts/allwinner -name "*h618*" -o -name "*zero2*" 2>/dev/null | head -10
-        
-    - name: Install Build Dependencies
+    - name: Install Dependencies
       run: |
         sudo apt update
-        sudo apt install -y build-essential bc bison flex libssl-dev libelf-dev device-tree-compiler
+        sudo apt install -y gcc-aarch64-linux-gnu build-essential bc bison flex libssl-dev libelf-dev
+    
+    - name: Get Kernel Source
+      run: |
+        git clone --depth=1 https://github.com/orangepi-xunlong/linux-orangepi -b orange-pi-6.1-sun50iw9
         
-    - name: Configure and Build Driver
+    - name: Set Up Cross Compilation
       run: |
         cd linux-orangepi
         
-        echo "=== Current directory ==="
-        pwd
-        echo "=== Available defconfig files in arch/arm64/configs/ ==="
-        ls -la arch/arm64/configs/
+        # 设置环境变量
+        echo "ARCH=arm64" >> $GITHUB_ENV
+        echo "CROSS_COMPILE=aarch64-linux-gnu-" >> $GITHUB_ENV
         
-        # 使用实际存在的defconfig
-        if [ -f "arch/arm64/configs/linux_sunxi64_defconfig" ]; then
-            echo "Using linux_sunxi64_defconfig"
-            make ARCH=arm64 linux_sunxi64_defconfig
-        elif [ -f "arch/arm64/configs/sunxi_defconfig" ]; then
-            echo "Using sunxi_defconfig"
-            make ARCH=arm64 sunxi_defconfig
-        else
-            echo "No suitable defconfig found, using default"
-            make ARCH=arm64 defconfig
-        fi
+        # 验证
+        echo "=== Toolchain info ==="
+        $CROSS_COMPILEgcc --version
         
-        # 确保sunxi_geth驱动被启用
-        echo "=== Checking SUNXI_GETH config ==="
-        if grep -q "CONFIG_SUNXI_GETH=y" .config; then
-            echo "SUNXI_GETH is already enabled"
-        elif grep -q "CONFIG_SUNXI_GETH=m" .config; then
-            echo "SUNXI_GETH is built as module, changing to built-in"
-            sed -i 's/CONFIG_SUNXI_GETH=m/CONFIG_SUNXI_GETH=y/' .config
-        elif grep -q "# CONFIG_SUNXI_GETH is not set" .config; then
-            echo "SUNXI_GETH is disabled, enabling it"
-            sed -i 's/# CONFIG_SUNXI_GETH is not set/CONFIG_SUNXI_GETH=y/' .config
-        else
-            echo "Adding SUNXI_GETH config"
-            echo "CONFIG_SUNXI_GETH=y" >> .config
-        fi
+    - name: Configure Kernel
+      run: |
+        cd linux-orangepi
         
-        # 保存配置
-        cp .config .config.backup
+        # 配置内核
+        make ${{ env.CROSS_COMPILE }} linux_sunxi64_defconfig
         
-        # 准备模块编译环境
-        make ARCH=arm64 olddefconfig
-        make ARCH=arm64 modules_prepare
+        # 启用sunxi_geth
+        echo "CONFIG_SUNXI_GETH=y" >> .config
+        echo "CONFIG_NET_VENDOR_ALLWINNER=y" >> .config
         
-        # 编译sunxi_geth驱动
-        echo "=== Building sunxi_geth driver ==="
-        make ARCH=arm64 M=drivers/net/ethernet/allwinner/
+        # 更新配置
+        make ${{ env.CROSS_COMPILE }} olddefconfig
         
-        # 检查是否编译成功
+        # 检查配置
+        grep SUNXI_GETH .config
+        
+    - name: Build Driver
+      run: |
+        cd linux-orangepi
+        
+        # 准备编译环境
+        make ${{ env.CROSS_COMPILE }} modules_prepare
+        
+        # 编译特定驱动
+        echo "=== Building allwinner ethernet drivers ==="
+        make ${{ env.CROSS_COMPILE }} M=drivers/net/ethernet/allwinner/
+        
+        # 检查结果
         if [ -f "drivers/net/ethernet/allwinner/sunxi-geth.ko" ]; then
-            echo "✅ Driver compiled successfully"
+            echo "✅ Driver found"
             mkdir -p ../output/drivers
             cp drivers/net/ethernet/allwinner/sunxi-geth.ko ../output/drivers/
-            modinfo ../output/drivers/sunxi-geth.ko
         else
-            echo "❌ Driver compilation failed"
-            echo "=== Looking for other network drivers ==="
+            echo "❌ Driver not found, listing all .ko files:"
             find drivers/net/ethernet/allwinner -name "*.ko" 2>/dev/null
-            echo "=== Config check ==="
-            grep SUNXI_GETH .config
-            exit 1
         fi
         
-    - name: Prepare Device Tree Files
+    - name: Prepare DTB
       run: |
         cd linux-orangepi
         
-        echo "=== Looking for OrangePi Zero 2W DTS/DTB ==="
-        
-        # 查找相关的DTS文件
-        DTS_FILES=$(find arch/arm64/boot/dts/allwinner -name "*h618*" -o -name "*zero2*" 2>/dev/null)
-        echo "Found DTS files:"
-        echo "$DTS_FILES"
+        # 查找DTS文件
+        echo "=== Looking for DTS files ==="
+        find arch/arm64/boot/dts -name "*h61[68]*" -o -name "*zero2*" 2>/dev/null
         
         # 创建输出目录
         mkdir -p ../output/dtb/allwinner
         
-        # 尝试编译sun50i-h618-orangepi-zero2w.dts
+        # 尝试编译DTB
         if [ -f "arch/arm64/boot/dts/allwinner/sun50i-h618-orangepi-zero2w.dts" ]; then
-            echo "Compiling DTS to DTB..."
-            dtc -I dts -O dtb -o ../output/dtb/allwinner/sun50i-h618-orangepi-zero2w.dtb \
-                arch/arm64/boot/dts/allwinner/sun50i-h618-orangepi-zero2w.dts
-            echo "✅ DTB compiled: sun50i-h618-orangepi-zero2w.dtb"
-        elif [ -f "arch/arm64/boot/dts/allwinner/sun50i-h616-orangepi-zero2.dts" ]; then
-            # 使用H616的DTS（可能兼容）
-            echo "Using H616 DTS as fallback..."
-            dtc -I dts -O dtb -o ../output/dtb/allwinner/sun50i-h616-orangepi-zero2.dtb \
-                arch/arm64/boot/dts/allwinner/sun50i-h616-orangepi-zero2.dts
-            echo "✅ DTB compiled: sun50i-h616-orangepi-zero2.dtb"
-        else
-            echo "❌ No suitable DTS file found"
-            # 列出所有allwinner DTS文件
-            find arch/arm64/boot/dts/allwinner -name "*.dts" | head -20
+            echo "Compiling DTS..."
+            make ${{ env.CROSS_COMPILE }} dtbs
+            cp arch/arm64/boot/dts/allwinner/sun50i-h618-orangepi-zero2w.dtb ../output/dtb/allwinner/ 2>/dev/null || true
         fi
         
-    - name: Build FnNAS Image
-      uses: ophub/fnnas@main
-      with:
-        fnnas_path: ""  # 使用默认基础镜像
-        fnnas_board: "orangepi-zero3"  # 先用zero3的配置，然后我们会替换文件
-        fnnas_kernel: "6.12.y"
-        auto_kernel: false
-        builder_name: "orangepi-zero2w-custom"
+        # 如果失败，尝试其他文件名
+        if [ ! -f "../output/dtb/allwinner/sun50i-h618-orangepi-zero2w.dtb" ]; then
+            find arch/arm64/boot/dts/allwinner -name "*.dtb" | grep -i "h61\|zero" | head -5 | while read dtb; do
+                echo "Copying: $(basename $dtb)"
+                cp "$dtb" ../output/dtb/allwinner/
+            done
+        fi
         
-    - name: Modify Image for OrangePi Zero 2W
+    - name: Check Results
       run: |
-        # 找到生成的镜像
-        IMG_FILE=$(find . -name "*.img" -type f | head -1)
-        if [ -z "$IMG_FILE" ]; then
-            echo "❌ No image file found"
-            exit 1
-        fi
+        echo "=== Build Results ==="
+        echo "Drivers:"
+        ls -la output/drivers/ 2>/dev/null || echo "No drivers"
         
-        echo "Found image: $IMG_FILE"
+        echo "DTB files:"
+        ls -la output/dtb/allwinner/ 2>/dev/null || echo "No DTB files"
         
-        # 挂载镜像
-        sudo losetup -fP "$IMG_FILE"
-        LOOP_DEVICE=$(losetup -l | grep "$(realpath $IMG_FILE)" | awk '{print $1}')
-        
-        # 查找分区
-        sudo partprobe "$LOOP_DEVICE"
-        
-        # 挂载boot分区（通常是第一个分区）
-        sudo mkdir -p /mnt/boot /mnt/root
-        sudo mount ${LOOP_DEVICE}p1 /mnt/boot 2>/dev/null || sudo mount ${LOOP_DEVICE}p2 /mnt/boot
-        
-        # 挂载root分区
-        sudo mount ${LOOP_DEVICE}p2 /mnt/root 2>/dev/null || sudo mount ${LOOP_DEVICE}p3 /mnt/root
-        
-        # 1. 替换DTB文件
-        if [ -f "output/dtb/allwinner/sun50i-h618-orangepi-zero2w.dtb" ]; then
-            echo "Replacing DTB file..."
-            sudo cp output/dtb/allwinner/sun50i-h618-orangepi-zero2w.dtb /mnt/boot/dtb/allwinner/
-        elif [ -f "output/dtb/allwinner/sun50i-h616-orangepi-zero2.dtb" ]; then
-            echo "Using H616 DTB file..."
-            sudo cp output/dtb/allwinner/sun50i-h616-orangepi-zero2.dtb /mnt/boot/dtb/allwinner/
-        fi
-        
-        # 2. 添加驱动模块
-        if [ -f "output/drivers/sunxi-geth.ko" ]; then
-            echo "Adding sunxi_geth driver..."
-            sudo mkdir -p /mnt/root/lib/modules/6.12.41-trim/kernel/drivers/net/ethernet/allwinner/
-            sudo cp output/drivers/sunxi-geth.ko /mnt/root/lib/modules/6.12.41-trim/kernel/drivers/net/ethernet/allwinner/
-            
-            # 更新模块依赖
-            sudo chroot /mnt/root depmod -a
-        fi
-        
-        # 3. 添加模块自动加载
-        echo "sunxi_geth" | sudo tee -a /mnt/root/etc/modules-load.d/sunxi.conf
-        
-        # 4. 修改引导配置（如果有extlinux.conf）
-        if [ -f "/mnt/boot/extlinux/extlinux.conf" ]; then
-            echo "Updating extlinux.conf..."
-            sudo sed -i 's/dtb .*/dtb \/dtb\/allwinner\/sun50i-h618-orangepi-zero2w.dtb/' /mnt/boot/extlinux/extlinux.conf
-        fi
-        
-        # 卸载
-        sudo umount /mnt/boot /mnt/root
-        sudo losetup -d "$LOOP_DEVICE"
-        
-        # 重命名镜像
-        mv "$IMG_FILE" "${IMG_FILE%.img}-orangepi-zero2w.img"
-        echo "✅ Modified image saved as: ${IMG_FILE%.img}-orangepi-zero2w.img"
-        
-    - name: Upload Artifact
+    - name: Upload Artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: fnnas-orangepi-zero2w
-        path: ./*-orangepi-zero2w.img
+        name: orangepi-drivers
+        path: output/
