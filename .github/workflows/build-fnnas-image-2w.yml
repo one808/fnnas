@@ -1,0 +1,46 @@
+# .github/workflows/build-orangepi-zero2w.yml
+name: Build FnNAS for OrangePi Zero 2W
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - 'orangepi-zero2w/**'
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup OrangePi Zero 2W support
+      run: |
+        # 1. 下载OrangePi内核源码
+        git clone --depth=1 https://github.com/orangepi-xunlong/linux-orangepi -b orange-pi-6.1-sunxi64
+        
+        # 2. 提取sunxi_geth驱动
+        cd linux-orangepi
+        make ARCH=arm64 sun50iw9_defconfig
+        make ARCH=arm64 modules_prepare
+        make ARCH=arm64 M=drivers/net/ethernet/allwinner/
+        
+        # 3. 复制驱动
+        mkdir -p ../kernel-modules/
+        cp drivers/net/ethernet/allwinner/sunxi-geth.ko ../kernel-modules/
+        
+        # 4. 复制设备树
+        cp arch/arm64/boot/dts/allwinner/sun50i-h618-orangepi-zero2w.dtb ../device-tree/
+        
+    - name: Build FnNAS with custom kernel
+      uses: ophub/fnnas@main
+      with:
+        fnnas_path: ""  # 留空以使用默认基础镜像
+        fnnas_board: "custom"  # 自定义模式
+        fnnas_kernel: "custom"  # 使用自定义内核
+        auto_kernel: false
+        custom_kernel_path: "./linux-orangepi"
+        custom_dtbs: "./device-tree/"
+        custom_modules: "./kernel-modules/"
+        builder_name: "orangepi-zero2w"
