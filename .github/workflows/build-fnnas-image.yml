@@ -422,7 +422,7 @@ jobs:
                   sort_by(.updated_at) |
                   reverse |
                   .[0] |
-                  {data: .updated_at, url: .url, name: .name}')
+                  {data: .updated_at, url: .browser_download_url, name: .name}')
 
               [[ -z "${latest_version}" || "${latest_version}" == "null" ]] && {
               echo "Error: Failed to resolve FnNAS image download URL."
