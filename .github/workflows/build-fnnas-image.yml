@@ -438,7 +438,7 @@ jobs:
           echo "Downloading: ${fnnas_filename}"
           echo "Source: ${latest_url}"
 
-          curl -fsSL \\
+          curl -fsSL \
                -H "Accept: application/octet-stream" \
                "${latest_url}" \
                -o "fnnas/${fnnas_filename}"
