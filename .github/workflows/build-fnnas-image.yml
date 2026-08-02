@@ -418,7 +418,7 @@ jobs:
                   jq -r --arg RTK "fnnas_base_image" \
                   --arg BOARD "${fnnas_base_version}" \
                   '[.[] | select(.tag_name | contains($RTK))] |
-                  map(.assets[] | select(.name | contains($BOARD) and endswith(".img.xz"))) |
+                  map(.assets[] | select(.name | contains($BOARD) and endswith(".img.gz"))) |
                   sort_by(.updated_at) |
                   reverse |
                   .[0] |
@@ -456,7 +456,7 @@ jobs:
         if: ${{ steps.down.outputs.status == 'success' && !cancelled() }}
         uses: one808/fnnas@main
         with:
-          fnnas_path: fnnas/*.img.xz
+          fnnas_path: fnnas/*.img.gz
           fnnas_board: ${{ inputs.fnnas_board }}
           fnnas_kernel: ${{ inputs.fnnas_kernel }}
           auto_kernel: ${{ inputs.auto_kernel }}
