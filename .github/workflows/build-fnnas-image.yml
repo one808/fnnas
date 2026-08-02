@@ -415,7 +415,7 @@ jobs:
                   -H "Accept: application/vnd.github+json" \
                    \
                   https://api.github.com/repos/ophub/fnnas/releases?per_page=20 | \
-                  jq -r --arg RTK "fnnas_base_image" \
+                  jq -r --arg RTK "${build_tag}" \
                   --arg BOARD "${fnnas_base_version}" \
                   '[.[] | select(.tag_name | contains($RTK))] |
                   map(.assets[] | select(.name | contains($BOARD) and endswith(".img.gz"))) |
